@@ -1,55 +1,130 @@
-# Cephalopod Camouflage Prototype
+# 神经控制与 Turing 模式耦合的头足类伪装计算模拟
 
-这个原型现在采用混合模型：
+<p align="center">
+  一个把环境视觉分析、神经控制器、多尺度 Turing / BVAM 图案生成、身体先验和三层皮肤渲染整合到一起的头足类伪装计算模拟原型。
+</p>
 
-1. `inverse-Turing` 风格的环境拟合
-   从环境图提取亮度、边缘、纹理、频谱和方向性特征，估计 BVAM 参数 `C`、`D_A`、`n`。
+<p align="center">
+  <a href="./docs/paper_design.md">论文草稿</a> ·
+  <a href="./docs/paper_design.pdf">PDF</a> ·
+  <a href="./docs/camouflage_pipeline.md">算法流程图</a>
+</p>
 
-2. `BVAM / Turing` 纹理生成
-   用论文 *A Turing-based bimodal population code can specify Cephalopod chromatic skin displays* 中的两变量 reaction-diffusion 方程生成皮肤图案。
+## 项目概览
 
-3. 多层皮肤渲染
-   把生成的激活场投射到离散 `chromatophore` 阵列，再叠加 `iridophore` 和 `leucophore` 两层，得到更接近头足类皮肤机制的颜色输出。
+这个项目不是“直接生成一张章鱼贴图”，而是把头足类伪装拆成几个可解释层次：
 
-4. 可选的参考图外形先验
-   通过 `rembg` 从章鱼参考图中提取 silhouette，再把这个 mask 转成 `mantle / head_arms / axis` 等身体图层，替代固定程序模板。
+- 环境视觉编码：亮度、对比度、边缘、频谱、方向性
+- 神经控制层：预测 `uniform / mottle / disruptive` 和多尺度增益
+- 图案生成层：用多尺度 `BVAM / Turing` 形成局部皮肤纹理
+- 身体先验层：支持程序模板、真实 silhouette 模板库和参考图分割
+- 皮肤渲染层：组合 `chromatophore / iridophore / leucophore`
 
-5. 内置章鱼 `body prior` 模板库
-   提供多种伏地章鱼姿态模板，并支持按环境特征自动选择模板。
+这条主线更接近“视觉输入 -> 中央控制 -> 局部皮肤组织”的生物启发逻辑，而不是把问题当成普通的端到端图像生成。
 
-## 当前算法
+## 结果预览
 
-环境图进入后，脚本会：
+### 主线版本
 
-- 提取视觉特征
-- 推断 `uniform / mottle / disruptive`
-- 用 inverse-Turing 风格映射估计 `BVAM` 参数
-- 解 BVAM 方程生成纹理场
-- 将纹理场映射到离散色素胞
-- 渲染三层皮肤：
-  `chromatophore`：黄 / 棕 / 黑色素层
-  `iridophore`：蓝绿 / 金色结构反射层
-  `leucophore`：高反射亮度底层
+当前最稳定的主线版本是卷积式神经控制器：
+
+- 输出目录：`outputs/neural_conv_turing_demo_20260403_0053`
+- 代表性结果：`final loss = 0.0382`
+
+<p align="center">
+  <img src="./outputs/neural_conv_turing_demo_20260403_0053/diagnostics.png" alt="neural conv diagnostics" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="./input/章鱼.png" alt="reference octopus" width="100%">
+    </td>
+    <td width="50%" align="center">
+      <img src="./outputs/neural_conv_turing_demo_20260403_0053/octopus_on_environment.png" alt="neural conv composite" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">章鱼参考图</td>
+    <td align="center">环境中的最终合成结果</td>
+  </tr>
+</table>
+
+### 参考图处理链路
+
+如果给 `--body-ref`，项目不会直接把参考图贴到结果上，而是先经过：
+
+`reference image -> mask raw -> mask clean -> cutout -> texture prior -> final composite`
+
+<table>
+  <tr>
+    <td><img src="./input/章鱼.png" alt="reference image" width="100%"></td>
+    <td><img src="./outputs/real_run_ref_zhangyu_v1/body_ref_mask_clean.png" alt="body ref mask clean" width="100%"></td>
+    <td><img src="./outputs/real_run_ref_zhangyu_v1/body_ref_texture_prior.png" alt="body ref texture prior" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center">reference image</td>
+    <td align="center">body_ref_mask_clean</td>
+    <td align="center">body_ref_texture_prior</td>
+  </tr>
+</table>
+
+## 核心方法
+
+### 1. 环境视觉编码
+
+从环境图像中提取：
+
+- 亮度
+- 局部对比度
+- 边缘强度
+- 细/中/粗三尺度纹理能量
+- 频谱特征
+- 方向性统计
+
+### 2. 神经控制模块
+
+神经网络不直接输出整张皮肤图，而是输出控制量：
+
+- `uniform / mottle / disruptive`
+- `coarse gain / mid gain / fine gain`
+- `delta C / delta D_A / delta n`
+
+这样保留了“中央控制 + 局部自组织”的层级关系。
+
+### 3. 多尺度 BVAM / Turing 图案生成
+
+局部皮肤纹理由多尺度 reaction-diffusion 生成：
+
+- 粗尺度：决定大块 body pattern 结构
+- 中尺度：决定 cluster 和 mottle
+- 细尺度：决定更接近 chromatophore grain 的颗粒感
+
+### 4. 三层皮肤渲染
+
+- `chromatophore`：主色素与主要明暗纹理
+- `iridophore`：冷暖偏移和结构色近似
+- `leucophore`：底层亮度支撑
 
 ## 生物学与工程边界
 
-这个项目是生物启发模型，不是真实章鱼脑和皮肤的逐细胞仿真。
+这个项目是生物启发计算原型，不是真实章鱼脑和皮肤的逐细胞仿真。
 
-已经直接借鉴的内容：
+直接借鉴的生物学概念：
 
-- 视觉输入经中央控制后驱动皮肤图案，而不是皮肤自己“看见”环境
-- `uniform / mottle / disruptive` 可作为 body pattern 的高层描述
-- 局部相互作用可以通过 Turing / Hopf 型 reaction-diffusion 生成 spots、stripes、mottle、blotch
-- 头足类皮肤颜色不仅来自色素胞，还涉及 `iridophore` 和 `leucophore`
+- 环境视觉经过中央控制后驱动 body pattern
+- `uniform / mottle / disruptive` 作为高层伪装程序
+- 局部相互作用可由 Turing / reaction-diffusion 描述
+- 颜色来源不只是一层色素，还涉及 `iridophore` 和 `leucophore`
 
 工程近似部分：
 
-- 环境图到 BVAM 参数的映射是工程拟合，不是论文给出的完整视觉神经模型
-- `reflectin / iridophore` 这里只做了近似的结构色渲染，不是严格光学仿真
-- 如果不给 `--body-ref`，轮廓会从内置章鱼模板库中选择
-- 即使给了 `--body-ref`，当前也只是 2D silhouette 先验，不包含 papillae、三维照明和真实肌肉驱动的姿态变形
+- 环境图到 BVAM 参数的映射是工程拟合
+- `reflectin / iridophore` 只是近似外观层，不是严格光学仿真
+- 当前 `body-ref` 主要还是 2D silhouette 先验
+- 还没有真实的 `papillae` 几何、三维姿态和肌肉驱动
 
-## 运行
+## 快速开始
 
 先激活环境：
 
@@ -57,75 +132,45 @@
 conda activate cephalocam
 ```
 
-运行静态伪装：
+运行主线版本：
 
 ```bash
 python octopus_camouflage.py \
-  --env input/reef.png \
-  --output-dir outputs/real_run_hybrid \
-  --size 512 \
-  --iterations 80
-```
-
-如果要直接从一张章鱼参考图提取外形先验：
-
-```bash
-python octopus_camouflage.py \
-  --env input/reef.png \
-  --body-ref "https://img95.699pic.com/photo/60020/1925.jpg_wh300.jpg!/fh/300/quality/90" \
-  --output-dir outputs/real_run_body_ref_v1
-```
-
-`--body-ref` 同时支持本地路径和 URL。这个模式下，脚本会先做前景分割，再用分割结果驱动身体轮廓，而不是继续使用程序生成的伏地章鱼模板。
-
-如果要使用内置模板库，并让程序自动按环境选择：
-
-```bash
-python octopus_camouflage.py \
-  --env input/reef.png \
+  --env input/reef1.png \
   --body-template auto \
-  --output-dir outputs/real_run_template_auto_v2
+  --output-dir outputs/neural_turing_demo
 ```
 
-如果要强制指定一个模板：
+如果要启用参考图先验：
 
 ```bash
-python octopus_camouflage.py --env input/reef.png --body-template reef_crouch
+python octopus_camouflage.py \
+  --env input/reef1.png \
+  --body-ref input/章鱼.png \
+  --output-dir outputs/real_run_ref_zhangyu
 ```
 
-当前内置模板：
-
-- `prone_spread`
-- `photo_sprawl`
-- `prone_tucked`
-- `reef_crouch`
-- `algae_reach`
-- `crevice_anchor`
-- `real_zhangyu_pose`
-
-选择优先级：
-
-- 给了 `--body-ref`：优先使用参考图外形先验
-- 没给 `--body-ref`：使用 `--body-template`
-- `--body-template auto`：根据环境特征自动选模板
-
-其中 `real_zhangyu_pose` 是从真实参考图分割得到的 silhouette 模板，不是程序生成轮廓。
-
-如果要切到论文里的动态 Hopf 一侧参数：
+如果要导出论文 PDF：
 
 ```bash
-python octopus_camouflage.py --env input/reef.png --dynamic
+python scripts/export_paper_pdf.py
 ```
 
-如果要减弱环境颜色辅助，只保留更偏纹理驱动的结果：
+默认会生成：
 
-```bash
-python octopus_camouflage.py --env input/reef.png --color-assist 0
-```
+- `docs/paper_design.pdf`
 
-## 输出
+## 主要输入与输出
 
-脚本会生成：
+### 输入
+
+- 环境图：`input/reef1.png`
+- 章鱼参考图：`input/章鱼.png`
+- 失败案例参考图：`input/Octopus.jpg`
+
+### 输出
+
+每次运行通常会得到：
 
 - `octopus_skin.png`
 - `chromatophore_layer.png`
@@ -134,56 +179,39 @@ python octopus_camouflage.py --env input/reef.png --color-assist 0
 - `octopus_on_environment.png`
 - `diagnostics.png`
 
-如果使用了 `--body-ref`，还会额外生成：
+如果使用 `--body-ref`，还会额外输出：
 
 - `body_ref_mask_raw.png`
 - `body_ref_mask_clean.png`
 - `body_ref_cutout.png`
 - `body_ref_texture_prior.png`
 
-实际输出目录会自动追加本地时间戳，格式是 `YYYYMMDD_HHMM`，例如：
-`outputs/real_run_ref2_20260403_0038`
+## 文档
 
-## 架构说明
+- [论文草稿](./docs/paper_design.md)
+- [论文 PDF](./docs/paper_design.pdf)
+- [算法流程图](./docs/camouflage_pipeline.md)
 
-更完整的数据流和算法层次图见：
-[docs/camouflage_pipeline.md](/Users/junye/Documents/code/visualstudio/cephalopod%20camouflage/docs/camouflage_pipeline.md)
+## 仓库结构
 
-如果你要把当前项目上升成一篇“神经机制 + Turing 模式 + 神经网络控制器”的生物启发计算小论文，成稿草案见：
-[docs/paper_design.md](/Users/junye/Documents/code/visualstudio/cephalopod%20camouflage/docs/paper_design.md)
-
-## 导出 PDF
-
-项目里已经带了论文 Markdown 到 PDF 的导出脚本，默认导出：
-[paper_design.md](/Users/junye/Documents/code/visualstudio/cephalopod%20camouflage/docs/paper_design.md)
-到
-[paper_design.pdf](/Users/junye/Documents/code/visualstudio/cephalopod%20camouflage/docs/paper_design.pdf)
-
-直接运行：
-
-```bash
-python scripts/export_paper_pdf.py
+```text
+.
+├── octopus_camouflage.py
+├── scripts/
+│   └── export_paper_pdf.py
+├── docs/
+│   ├── paper_design.md
+│   ├── paper_design.pdf
+│   └── camouflage_pipeline.md
+├── input/
+├── outputs/
+└── assets/
 ```
-
-如果要自定义输入和输出：
-
-```bash
-python scripts/export_paper_pdf.py \
-  --input docs/paper_design.md \
-  --output docs/paper_design.pdf
-```
-
-这条导出链路使用：
-
-- `pandoc` 负责 `Markdown -> HTML`
-- 本地 Chrome headless 负责 `HTML -> PDF`
-
-因此需要系统里能找到 `pandoc` 和 Google Chrome/Chromium。
 
 ## 参考文献
 
-- Iskarous K, Mather J, Alupay J. *A Turing-based bimodal population code can specify Cephalopod chromatic skin displays*. arXiv. https://arxiv.org/abs/2205.11500
-- Ishida T. *A model of octopus epidermis pattern mimicry mechanisms using inverse operation of the Turing reaction model*. PLoS ONE. https://pubmed.ncbi.nlm.nih.gov/34379702/
-- Montague TG. *Neural control of cephalopod camouflage*. Current Biology. https://pubmed.ncbi.nlm.nih.gov/37875091/
-- Messenger JB. *Cephalopod chromatophores: neurobiology and natural history*. Biological Reviews. https://doi.org/10.1017/S1464793101005772
-- *Reconstruction of Dynamic and Reversible Color Change using Reflectin Protein*. Scientific Reports. https://www.nature.com/articles/s41598-019-41638-8
+- Iskarous K, Mather J, Alupay J. *A Turing-based bimodal population code can specify Cephalopod chromatic skin displays*. https://arxiv.org/abs/2205.11500
+- Ishida T. *A model of octopus epidermis pattern mimicry mechanisms using inverse operation of the Turing reaction model*. https://pubmed.ncbi.nlm.nih.gov/34379702/
+- Montague TG. *Neural control of cephalopod camouflage*. https://pubmed.ncbi.nlm.nih.gov/37875091/
+- Messenger JB. *Cephalopod chromatophores: neurobiology and natural history*. https://doi.org/10.1017/S1464793101005772
+- *Reconstruction of Dynamic and Reversible Color Change using Reflectin Protein*. https://www.nature.com/articles/s41598-019-41638-8
